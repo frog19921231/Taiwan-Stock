@@ -20,7 +20,6 @@ if 'stock_ma_notes' not in st.session_state:
     st.session_state.stock_ma_notes = {}
 if 'alerted_stocks' not in st.session_state:
     st.session_state.alerted_stocks = set()
-# 🌟 新增：用來記錄觸發過警報的詳細歷史名單
 if 'alert_history' not in st.session_state:
     st.session_state.alert_history = []
 if 'last_ptt_scan' not in st.session_state:
@@ -30,7 +29,6 @@ if 'ptt_results' not in st.session_state:
 if 'ptt_last_update_str' not in st.session_state:
     st.session_state.ptt_last_update_str = "尚未執行"
 
-
 # ================= 核心邏輯函數 =================
 
 def get_push_count(tag):
@@ -38,11 +36,8 @@ def get_push_count(tag):
     text = tag.text.strip()
     if text == "爆": return 100
     if text.startswith("X"): return -10
-    try:
-        return int(text)
-    except ValueError:
-        return 0
-
+    try: return int(text)
+    except ValueError: return 0
 
 STOCK_KEYWORD_DICT = {
     "台積電": "2330", "神山": "2330", "鴻海": "2317", "海公公": "2317", "公公": "2317",
@@ -51,7 +46,6 @@ STOCK_KEYWORD_DICT = {
     "萬海": "2615", "群創": "3481", "聯電": "2303", "二哥": "2303"
 }
 
-
 def parse_stock_id(title):
     match = re.search(r'\b(\d{4})\b', title)
     if match: return match.group(1)
@@ -59,8 +53,8 @@ def parse_stock_id(title):
         if keyword in title: return stock_id
     return None
 
-
 def scan_ptt_logic(pages, min_push):
+    """強化防錯版 PTT 爬蟲"""
     base_url = "https://www.ptt.cc"
     url = f"{base_url}/bbs/Stock/index.html"
     cookies = {'over18': '1'}
@@ -71,7 +65,7 @@ def scan_ptt_logic(pages, min_push):
         try:
             res = requests.get(url, headers=headers, cookies=cookies, timeout=5)
             if res.status_code != 200: break
-
+                
             soup = BeautifulSoup(res.text, 'html.parser')
             articles = soup.find_all('div', class_='r-ent')
             if not articles: break
@@ -79,7 +73,7 @@ def scan_ptt_logic(pages, min_push):
             for art in articles:
                 title_div = art.find('div', class_='title')
                 if not title_div or not title_div.find('a'): continue
-
+                    
                 title = title_div.text.strip()
                 a_tag = title_div.find('a')
                 article_url = base_url + a_tag['href'] if a_tag and 'href' in a_tag.attrs else "#"
@@ -98,51 +92,48 @@ def scan_ptt_logic(pages, min_push):
                             "推文熱度": heat_icon,
                             "股票代號": stock_id if stock_id else "未解析",
                             "文章標題": title,
-                            "文章網址": article_url
+                            "文章網址": article_url 
                         })
-
+                        
             paging_div = soup.find('div', class_='btn-group btn-group-paging')
             if paging_div:
                 prev_page_a = paging_div.find_all('a')[1]
                 if prev_page_a and 'href' in prev_page_a.attrs:
                     url = base_url + prev_page_a['href']
-                else:
-                    break
-            else:
-                break
+                else: break
+            else: break
 
         except Exception as e:
             print(f"PTT 爬取發生錯誤: {e}")
             break
     return article_data
 
-
 def check_ma_breakthrough(stock_id):
+    """檢測個股最新一天是否突破週線、月線、季線"""
     try:
         ticker = f"{stock_id}.TW"
         df = yf.download(ticker, period="6mo", interval="1d", progress=False)
         if df.empty or len(df) < 65: return ""
-
+        
         df['MA5'] = df['Close'].rolling(window=5).mean()
         df['MA20'] = df['Close'].rolling(window=20).mean()
         df['MA60'] = df['Close'].rolling(window=60).mean()
-
+        
         today_close = float(df['Close'].iloc[-1])
         yesterday_close = float(df['Close'].iloc[-2])
-
+        
         ma5_today, ma5_yest = float(df['MA5'].iloc[-1]), float(df['MA5'].iloc[-2])
         ma20_today, ma20_yest = float(df['MA20'].iloc[-1]), float(df['MA20'].iloc[-2])
         ma60_today, ma60_yest = float(df['MA60'].iloc[-1]), float(df['MA60'].iloc[-2])
-
+        
         notes = []
         if yesterday_close <= ma5_yest and today_close > ma5_today: notes.append("🚀突5MA")
         if yesterday_close <= ma20_yest and today_close > ma20_today: notes.append("🔥突月線")
         if yesterday_close <= ma60_yest and today_close > ma60_today: notes.append("👑突季線")
-
+            
         return " ".join(notes) if notes else ""
     except Exception:
         return ""
-
 
 def fetch_twse_realtime(stock_set, alert_threshold):
     if not stock_set: return []
@@ -160,7 +151,7 @@ def fetch_twse_realtime(stock_set, alert_threshold):
                 stock_id = info.get("c")
                 stock_name = info.get("n")
                 st.session_state.stock_names[stock_id] = stock_name
-
+                
                 if stock_id not in st.session_state.stock_ma_notes:
                     st.session_state.stock_ma_notes[stock_id] = check_ma_breakthrough(stock_id)
 
@@ -169,14 +160,12 @@ def fetch_twse_realtime(stock_set, alert_threshold):
                 yesterday_price = float(info.get("y", 0))
                 volume = int(info.get("v", 0))
 
-                change_percent = ((
-                                              current_price - yesterday_price) / yesterday_price) * 100 if yesterday_price > 0 else 0.0
+                change_percent = ((current_price - yesterday_price) / yesterday_price) * 100 if yesterday_price > 0 else 0.0
 
                 if change_percent >= alert_threshold and stock_id not in st.session_state.alerted_stocks:
                     st.toast(f"🚨 警報！{stock_name} 漲幅突破 {alert_threshold}% (現價 {current_price})", icon="🚀")
-                    st.session_state.alerted_stocks.add(stock_id)
-
-                    # 🌟 核心升級：將觸發警報的標的存入歷史清單中
+                    st.session_state.alerted_stocks.add(stock_id) 
+                    
                     st.session_state.alert_history.insert(0, {
                         "time": datetime.datetime.now().strftime("%H:%M:%S"),
                         "id": stock_id,
@@ -196,7 +185,6 @@ def fetch_twse_realtime(stock_set, alert_threshold):
         return results
     except Exception:
         return []
-
 
 def fetch_kline_chart(stock_id, period, interval, label_name):
     try:
@@ -226,7 +214,6 @@ def fetch_kline_chart(stock_id, period, interval, label_name):
     except Exception:
         return None
 
-
 def fetch_real_institutional(stock_id):
     end_date = datetime.date.today().strftime("%Y-%m-%d")
     start_date = (datetime.date.today() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
@@ -249,16 +236,12 @@ def fetch_real_institutional(stock_id):
             for record in latest_records:
                 volume_in_lots = (record.get("buy", 0) - record.get("sell", 0)) // 1000
                 name = record.get("name", "")
-                if "外資" in name:
-                    chip_result["外資"] += volume_in_lots
-                elif "投信" in name:
-                    chip_result["投信"] += volume_in_lots
-                elif "自營商" in name:
-                    chip_result["自營商"] += volume_in_lots
+                if "外資" in name: chip_result["外資"] += volume_in_lots
+                elif "投信" in name: chip_result["投信"] += volume_in_lots
+                elif "自營商" in name: chip_result["自營商"] += volume_in_lots
     except Exception:
         latest_date_str = "網路錯誤"
     return chip_result, latest_date_str
-
 
 def fetch_real_news(stock_id):
     url = f"https://tw.stock.yahoo.com/quote/{stock_id}/news"
@@ -279,13 +262,37 @@ def fetch_real_news(stock_id):
     except Exception:
         return [{"title": "新聞抓取連線失敗", "link": "#"}]
 
-
 def get_marquee_html():
-    hot_list = ["2330", "2317", "3231", "2603", "2454", "2382", "3481", "2618", "2356", "2891"]
-    params = "|".join([f"tse_{sid}.tw" for sid in hot_list])
-    url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={params}&_={int(time.time() * 1000)}"
+    """動態版：先爬取 Yahoo 當日成交量前10大代號，再抓取證交所即時量價"""
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    yahoo_url = "https://tw.stock.yahoo.com/rank/volume"
+    dynamic_hot_list = []
+    
     try:
-        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=3).json()
+        yahoo_res = requests.get(yahoo_url, headers=headers, timeout=3)
+        if yahoo_res.status_code == 200:
+            yahoo_soup = BeautifulSoup(yahoo_res.text, 'html.parser')
+            links = yahoo_soup.find_all('a', href=True)
+            for link in links:
+                href = link['href']
+                match = re.search(r'/quote/(\d{4})\b', href)
+                if match:
+                    sid = match.group(1)
+                    if sid not in dynamic_hot_list:
+                        dynamic_hot_list.append(sid)
+                if len(dynamic_hot_list) >= 10:
+                    break
+    except Exception as e:
+        print(f"動態獲取排行失敗，使用備用名單: {e}")
+        
+    if len(dynamic_hot_list) < 5:
+        dynamic_hot_list = ["2330", "2317", "3231", "2603", "2454", "2382", "3481", "2618", "2356", "2891"]
+
+    params = "|".join([f"tse_{sid}.tw|otc_{sid}.tw" for sid in dynamic_hot_list])
+    url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={params}&_={int(time.time() * 1000)}"
+
+    try:
+        res = requests.get(url, headers=headers, timeout=3).json()
         stocks = []
         if "msgArray" in res:
             for info in res["msgArray"]:
@@ -294,18 +301,19 @@ def get_marquee_html():
                 y_price = float(info.get("y", 0))
                 vol = int(info.get("v", 0))
                 pct = ((price - y_price) / y_price) * 100 if y_price > 0 else 0.0
+
                 stocks.append({"id": info.get("c"), "name": info.get("n"), "price": price, "pct": pct, "vol": vol})
+
         stocks.sort(key=lambda x: x['vol'], reverse=True)
-        top_stocks = stocks[:10]
+
         html_content = ""
-        for s in top_stocks:
-            if s['pct'] > 0:
-                color, arrow = "#ff4b4b", "▲"
-            elif s['pct'] < 0:
-                color, arrow = "#00fa9a", "▼"
-            else:
-                color, arrow = "white", "-"
-            html_content += f"<a href='/?target_stock={s['id']}' target='_self' style='text-decoration:none; color:{color}; margin-right: 40px; font-size: 18px; font-weight: bold;' title='點擊將 {s['name']} 加入分析'>{s['name']} {s['price']} {arrow} {s['pct']:.2f}%</a>"
+        for s in stocks:
+            if s['pct'] > 0: color, arrow = "#ff4b4b", "▲"
+            elif s['pct'] < 0: color, arrow = "#00fa9a", "▼"
+            else: color, arrow = "white", "-"
+            
+            html_content += f"<a href='/?target_stock={s['id']}' target='_self' style='text-decoration:none; color:{color}; margin-right: 40px; font-size: 18px; font-weight: bold;' title='今日成交量排名。點擊將 {s['name']} 加入分析'>{s['name']} {s['price']} {arrow} {s['pct']:.2f}%</a>"
+
         return f"""
         <div style="background-color: #1E1E1E; padding: 12px; border-radius: 8px; border: 1px solid #333; margin-bottom: 20px;">
             <marquee behavior="scroll" direction="left" scrollamount="6" onmouseover="this.stop();" onmouseout="this.start();">
@@ -314,10 +322,10 @@ def get_marquee_html():
         </div>
         """
     except Exception:
-        return "<div style='color: gray;'>即時行情跑馬燈載入中...</div>"
-
+        return "<div style='color: gray;'>即時行情動態跑馬燈載入中...</div>"
 
 def fetch_five_levels(stock_id):
+    """抓取單檔股票的即時開高低收與五檔報價明細"""
     url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw&_={int(time.time() * 1000)}"
     try:
         res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=3).json()
@@ -327,12 +335,12 @@ def fetch_five_levels(stock_id):
             bid_vols = info.get('g', '').split('_')[:-1]
             asks = info.get('a', '').split('_')[:-1]
             ask_vols = info.get('f', '').split('_')[:-1]
-
+            
             bids += ['-'] * (5 - len(bids))
             bid_vols += ['-'] * (5 - len(bid_vols))
             asks += ['-'] * (5 - len(asks))
             ask_vols += ['-'] * (5 - len(ask_vols))
-
+            
             return {
                 "open": info.get('o', '-'),
                 "high": info.get('h', '-'),
@@ -343,7 +351,6 @@ def fetch_five_levels(stock_id):
     except Exception:
         pass
     return None
-
 
 # ================= 網頁介面與排版 =================
 
@@ -366,16 +373,13 @@ st.sidebar.markdown("---")
 pages_to_crawl = st.sidebar.slider("PTT 掃描頁數", 1, 10, 3)
 min_push = st.sidebar.number_input("觸發監控推文門檻", min_value=10, max_value=100, value=50)
 
-# 🌟 新增：側邊欄的即時警報監控台
 st.sidebar.markdown("---")
 st.sidebar.subheader("🚨 即時警報監控台")
 if st.session_state.alert_history:
     st.sidebar.caption("點擊下方按鈕可快速查看該檔個股")
     for idx, alert in enumerate(st.session_state.alert_history):
-        # 生成可點擊的警報按鈕
         btn_label = f"[{alert['time']}] {alert['name']} 🚀 +{alert['pct']:.1f}%"
         if st.sidebar.button(btn_label, key=f"alert_btn_{alert['id']}_{idx}"):
-            # 點擊後，強制將右側儀表板切換到這檔股票，並重整畫面
             st.session_state.force_select_stock = alert['id']
             st.rerun()
 else:
@@ -421,7 +425,7 @@ with col_left:
     st.markdown("---")
     st.subheader("📊 即時量價總表")
     st.caption(f"量價最後更新: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (每 30 秒刷新)")
-
+    
     twse_data = fetch_twse_realtime(st.session_state.monitored_stocks, alert_threshold)
     if twse_data:
         st.dataframe(twse_data, use_container_width=True, hide_index=True)
@@ -430,9 +434,9 @@ with col_left:
 
     if st.button("🗑️ 清空監控清單與警報紀錄"):
         st.session_state.monitored_stocks.clear()
-        st.session_state.stock_ma_notes.clear()
+        st.session_state.stock_ma_notes.clear() 
         st.session_state.alerted_stocks.clear()
-        st.session_state.alert_history.clear()  # 🌟 清空警報歷史
+        st.session_state.alert_history.clear()
         st.rerun()
 
 with col_right:
@@ -440,18 +444,17 @@ with col_right:
 
     if st.session_state.monitored_stocks:
         monitored_list = list(st.session_state.monitored_stocks)
-
+        
         default_index = 0
         if 'force_select_stock' in st.session_state and st.session_state.force_select_stock in monitored_list:
             default_index = monitored_list.index(st.session_state.force_select_stock)
-            del st.session_state.force_select_stock
+            del st.session_state.force_select_stock 
 
         selected_stock = st.selectbox(
             "請選擇要深入分析的標的：",
             monitored_list,
             index=default_index,
-            format_func=lambda
-                x: f"{x} {st.session_state.stock_names.get(x, '')} {st.session_state.stock_ma_notes.get(x, '')}"
+            format_func=lambda x: f"{x} {st.session_state.stock_names.get(x, '')} {st.session_state.stock_ma_notes.get(x, '')}"
         )
 
         tab1, tab2, tab3, tab4 = st.tabs(["📈 K線與技術面", "🏦 法人真實籌碼", "📰 相關即時新聞", "⚡ 即時量價明細"])
@@ -467,10 +470,8 @@ with col_right:
             cfg = timeframe_mapping[time_frame]
             with st.spinner(f"載入 {time_frame} 資料中..."):
                 fig = fetch_kline_chart(selected_stock, cfg["period"], cfg["interval"], time_frame)
-                if fig:
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.warning("無法取得該週期的歷史 K 線資料。")
+                if fig: st.plotly_chart(fig, use_container_width=True)
+                else: st.warning("無法取得該週期的歷史 K 線資料。")
 
         with tab2:
             with st.spinner("向 FinMind 請求最新真實籌碼中..."):
@@ -479,8 +480,7 @@ with col_right:
                 chip_cols = st.columns(3)
                 for idx, (inst, value) in enumerate(chip_data.items()):
                     with chip_cols[idx]:
-                        st.metric(label=inst, value=f"{value} 張", delta="買超" if value > 0 else "賣超",
-                                  delta_color="normal")
+                        st.metric(label=inst, value=f"{value} 張", delta="買超" if value > 0 else "賣超", delta_color="normal")
 
         with tab3:
             with st.spinner("📰 正在即時抓取 Yahoo 股市新聞..."):
@@ -494,22 +494,22 @@ with col_right:
             with st.spinner("獲取即時五檔報價中..."):
                 level_data = fetch_five_levels(selected_stock)
                 current_info = next((item for item in twse_data if item["代號"] == selected_stock), None)
-
+                
                 if level_data and current_info:
                     m1, m2, m3, m4 = st.columns(4)
                     m1.metric("開盤價", level_data['open'])
                     m2.metric("最高價", level_data['high'])
                     m3.metric("最低價", level_data['low'])
                     m4.metric("總成交量", f"{current_info['成交量']} 張")
-
-                    st.write("")
+                    
+                    st.write("") 
                     c_bid, c_ask = st.columns(2)
-
+                    
                     with c_bid:
                         st.markdown("##### 🔽 委買 (Bids)")
                         bid_df = pd.DataFrame({"買價": level_data['bids'], "委買張數": level_data['bid_vols']})
                         st.dataframe(bid_df, use_container_width=True, hide_index=True)
-
+                        
                     with c_ask:
                         st.markdown("##### 🔼 委賣 (Asks)")
                         ask_df = pd.DataFrame({"賣價": level_data['asks'], "委賣張數": level_data['ask_vols']})
