@@ -13,7 +13,7 @@ st.set_page_config(page_title="台股決策支持系統 (DSS)", page_icon="📈"
 
 # ================= 狀態管理 (Session State) =================
 if 'monitored_stocks' not in st.session_state:
-    st.session_state.monitored_stocks = {"2330", "2317"}
+    st.session_state.monitored_stocks = {"2330", "2317", "0050"} # 預載加入 0050 測試 ETF
 if 'stock_names' not in st.session_state:
     st.session_state.stock_names = {}
 if 'stock_ma_notes' not in st.session_state:
@@ -40,21 +40,20 @@ def get_push_count(tag):
     except ValueError: return 0
 
 STOCK_KEYWORD_DICT = {
-    "台積電": "2330", "神山": "2330", "鴻海": "2317", "海公公": "2317", "公公": "2317",
-    "長榮": "2603", "阿榮": "2603", "聯發科": "2454", "發哥": "2454",
-    "緯創": "3231", "廣達": "2382", "肉鬆": "2382", "陽明": "2609",
-    "萬海": "2615", "群創": "3481", "聯電": "2303", "二哥": "2303"
+    "台積電": "2330", "神山": "2330", "鴻海": "2317", "海公公": "2317",
+    "長榮": "2603", "聯發科": "2454", "緯創": "3231", "廣達": "2382",
+    "台灣50": "0050", "高股息": "0056", "永續高股息": "00878"
 }
 
 def parse_stock_id(title):
-    match = re.search(r'\b(\d{4})\b', title)
+    # 🌟 修改：支援 4 碼個股與 5 碼 ETF 的數字搜尋
+    match = re.search(r'\b(\d{4,5})\b', title)
     if match: return match.group(1)
     for keyword, stock_id in STOCK_KEYWORD_DICT.items():
         if keyword in title: return stock_id
     return None
 
 def scan_ptt_logic(pages, min_push):
-    """強化防錯版 PTT 爬蟲"""
     base_url = "https://www.ptt.cc"
     url = f"{base_url}/bbs/Stock/index.html"
     cookies = {'over18': '1'}
@@ -109,7 +108,6 @@ def scan_ptt_logic(pages, min_push):
     return article_data
 
 def check_ma_breakthrough(stock_id):
-    """檢測個股最新一天是否突破週線、月線、季線"""
     try:
         ticker = f"{stock_id}.TW"
         df = yf.download(ticker, period="6mo", interval="1d", progress=False)
@@ -137,6 +135,7 @@ def check_ma_breakthrough(stock_id):
 
 def fetch_twse_realtime(stock_set, alert_threshold):
     if not stock_set: return []
+    # 🌟 修改：ETF 也是用 tse (上市) 的通道查詢即可
     stock_params = "|".join([f"tse_{sid}.tw" for sid in stock_set])
     timestamp = int(time.time() * 1000)
     url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={stock_params}&_={timestamp}"
@@ -215,11 +214,17 @@ def fetch_kline_chart(stock_id, period, interval, label_name):
         return None
 
 def fetch_real_institutional(stock_id):
+    """🌟 修改：動態判斷個股與 ETF，切換 FinMind 籌碼資料集"""
     end_date = datetime.date.today().strftime("%Y-%m-%d")
     start_date = (datetime.date.today() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+    
+    # 判斷代號長度：4 碼為個股，5 碼通常為 ETF
+    is_etf = len(str(stock_id).strip()) == 5
+    dataset = "TaiwanStockInstitutionalInvestorsBuySell" if not is_etf else "TaiwanEeceptInvestorsBuySell"
+    
     url = "https://api.finmindtrade.com/api/v4/data"
     params = {
-        "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
+        "dataset": dataset,
         "data_id": stock_id,
         "start_date": start_date,
         "end_date": end_date
@@ -236,7 +241,9 @@ def fetch_real_institutional(stock_id):
             for record in latest_records:
                 volume_in_lots = (record.get("buy", 0) - record.get("sell", 0)) // 1000
                 name = record.get("name", "")
-                if "外資" in name: chip_result["外資"] += volume_in_lots
+                
+                # 兼容 ETF 與個股的欄位名稱定義差異
+                if "外資" in name or "🚀" in name: chip_result["外資"] += volume_in_lots
                 elif "投信" in name: chip_result["投信"] += volume_in_lots
                 elif "自營商" in name: chip_result["自營商"] += volume_in_lots
     except Exception:
@@ -244,7 +251,12 @@ def fetch_real_institutional(stock_id):
     return chip_result, latest_date_str
 
 def fetch_real_news(stock_id):
-    url = f"https://tw.stock.yahoo.com/quote/{stock_id}/news"
+    """🌟 修改：優化 Yahoo 網址拼接，完美相容個股與 ETF 新聞路徑"""
+    is_etf = len(str(stock_id).strip()) == 5
+    # ETF 在 Yahoo 新聞需要完整的後綴，個股則可以直接用號碼
+    url_id = f"{stock_id}.TW" if is_etf else stock_id
+    url = f"https://tw.stock.yahoo.com/quote/{url_id}/news"
+    
     headers = {'User-Agent': 'Mozilla/5.0'}
     news_list = []
     try:
@@ -263,8 +275,8 @@ def fetch_real_news(stock_id):
         return [{"title": "新聞抓取連線失敗", "link": "#"}]
 
 def get_marquee_html():
-    """動態版：先爬取 Yahoo 當日成交量前10大代號，再抓取證交所即時量價"""
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    """🌟 修改：動態過濾無名項目(None)，避免特殊權證與興櫃股破壞跑馬燈"""
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     yahoo_url = "https://tw.stock.yahoo.com/rank/volume"
     dynamic_hot_list = []
     
@@ -275,18 +287,19 @@ def get_marquee_html():
             links = yahoo_soup.find_all('a', href=True)
             for link in links:
                 href = link['href']
-                match = re.search(r'/quote/(\d{4})\b', href)
+                # 🌟 正規表示法微調：放寬抓取 4-5 位數的正規個股與 ETF 代號
+                match = re.search(r'/quote/(\d{4,5})\b', href)
                 if match:
                     sid = match.group(1)
                     if sid not in dynamic_hot_list:
                         dynamic_hot_list.append(sid)
-                if len(dynamic_hot_list) >= 10:
+                if len(dynamic_hot_list) >= 15: # 多抓幾檔進行防呆過濾
                     break
     except Exception as e:
-        print(f"動態獲取排行失敗，使用備用名單: {e}")
+        print(f"動態獲取排行失敗: {e}")
         
     if len(dynamic_hot_list) < 5:
-        dynamic_hot_list = ["2330", "2317", "3231", "2603", "2454", "2382", "3481", "2618", "2356", "2891"]
+        dynamic_hot_list = ["2330", "2317", "3231", "2603", "0050", "2382", "00878", "2618", "2356", "2891"]
 
     params = "|".join([f"tse_{sid}.tw|otc_{sid}.tw" for sid in dynamic_hot_list])
     url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={params}&_={int(time.time() * 1000)}"
@@ -296,6 +309,10 @@ def get_marquee_html():
         stocks = []
         if "msgArray" in res:
             for info in res["msgArray"]:
+                # 🌟 防呆核心：過濾掉查無名、無價的無效項目(None)
+                if not info.get("n") or info.get("n") == "-" or info.get("n").strip() == "":
+                    continue
+                    
                 price_str = info.get("z", info.get("b", "0").split("_")[0])
                 price = float(price_str) if price_str and price_str != "-" else 0.0
                 y_price = float(info.get("y", 0))
@@ -305,14 +322,15 @@ def get_marquee_html():
                 stocks.append({"id": info.get("c"), "name": info.get("n"), "price": price, "pct": pct, "vol": vol})
 
         stocks.sort(key=lambda x: x['vol'], reverse=True)
+        render_stocks = stocks[:10] # 精選前 10 名有效清單
 
         html_content = ""
-        for s in stocks:
+        for s in render_stocks:
             if s['pct'] > 0: color, arrow = "#ff4b4b", "▲"
             elif s['pct'] < 0: color, arrow = "#00fa9a", "▼"
             else: color, arrow = "white", "-"
             
-            html_content += f"<a href='/?target_stock={s['id']}' target='_self' style='text-decoration:none; color:{color}; margin-right: 40px; font-size: 18px; font-weight: bold;' title='今日成交量排名。點擊將 {s['name']} 加入分析'>{s['name']} {s['price']} {arrow} {s['pct']:.2f}%</a>"
+            html_content += f"<a href='/?target_stock={s['id']}' target='_self' style='text-decoration:none; color:{color}; margin-right: 40px; font-size: 18px; font-weight: bold;' title='點擊分析 {s['name']}'>{s['name']} {s['price']} {arrow} {s['pct']:.2f}%</a>"
 
         return f"""
         <div style="background-color: #1E1E1E; padding: 12px; border-radius: 8px; border: 1px solid #333; margin-bottom: 20px;">
@@ -325,7 +343,7 @@ def get_marquee_html():
         return "<div style='color: gray;'>即時行情動態跑馬燈載入中...</div>"
 
 def fetch_five_levels(stock_id):
-    """抓取單檔股票的即時開高低收與五檔報價明細"""
+    """🌟 修改：支援 4 碼與 5 碼代號之五檔行情解算"""
     url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw&_={int(time.time() * 1000)}"
     try:
         res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=3).json()
