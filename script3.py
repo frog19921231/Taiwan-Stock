@@ -136,10 +136,9 @@ def check_ma_breakthrough(stock_id):
         return ""
 
 def fetch_twse_realtime(stock_set, alert_threshold):
-    """🌟 雙通道優化版：同時請求上市與上櫃通道，徹底解決盤中量價顯示為 0 的問題"""
+    """雙通道高抗壓即時量價解析"""
     if not stock_set: return []
     
-    # 🌟 修改：每一檔股票代號都同時送出 tse (上市) 與 otc (上櫃) 查詢參數，確保證交所能正確分流回應
     params_list = []
     for sid in stock_set:
         params_list.append(f"tse_{sid}.tw")
@@ -148,18 +147,14 @@ def fetch_twse_realtime(stock_set, alert_threshold):
     stock_params = "|".join(params_list)
     timestamp = int(time.time() * 1000)
     url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={stock_params}&_={timestamp}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
     results = []
     try:
         response = requests.get(url, headers=headers, timeout=5)
         data = response.json()
         if "msgArray" in data and data["msgArray"]:
-            # 用一個 set 來防呆，避免同一檔股票因為 tse 和 otc 都回傳而重疊顯示
             seen_stocks = set()
-            
             for info in data["msgArray"]:
                 stock_id = info.get("c")
                 if not stock_id or stock_id in seen_stocks:
@@ -171,7 +166,7 @@ def fetch_twse_realtime(stock_set, alert_threshold):
                 if stock_id not in st.session_state.stock_ma_notes:
                     st.session_state.stock_ma_notes[stock_id] = check_ma_breakthrough(stock_id)
 
-                # 🌟 優化價格解析：如果當下成交價 'z' 抓不到，改抓買進價 'b' 的第一檔，再抓不到就抓昨收價 'y'
+                # 三層價格防禦機制 (成交價 'z' -> 買進價 'b' -> 昨收價 'y')
                 price_str = info.get("z", "").strip()
                 if not price_str or price_str == "-":
                     price_str = info.get("b", "").split("_")[0].strip()
@@ -182,10 +177,8 @@ def fetch_twse_realtime(stock_set, alert_threshold):
                 yesterday_price = float(info.get("y", 0))
                 volume = int(info.get("v", 0))
 
-                # 計算即時漲跌幅
                 change_percent = ((current_price - yesterday_price) / yesterday_price) * 100 if yesterday_price > 0 else 0.0
 
-                # 排除完全沒成交資料的極端防呆
                 if current_price == 0:
                     continue
 
@@ -212,8 +205,7 @@ def fetch_twse_realtime(stock_set, alert_threshold):
                     "成交量": volume
                 })
         return results
-    except Exception as e:
-        print(f"量價抓取異常: {e}")
+    except Exception:
         return []
 
 def fetch_kline_chart(stock_id, period, interval, label_name):
@@ -245,38 +237,26 @@ def fetch_kline_chart(stock_id, period, interval, label_name):
         return None
 
 def fetch_real_institutional(stock_id):
-    """🌟 智慧優化版：以 16:00 為分水嶺，非公布時間自動完美回溯前一日/禮拜五數據"""
+    """16:00智慧分流結算版籌碼爬蟲"""
     today = datetime.date.today()
     now = datetime.datetime.now()
-    weekday = today.weekday()  # 0是週一, 1是週二..., 5是週六, 6是週日
+    weekday = today.weekday()
     current_hour = now.hour
 
-    # 預設基準日期為今天
     target_date = today
-
-    # 🌟 核心分流判定：今天是否已經過了 16:00 結算點？
     is_after_settlement = (current_hour >= 16)
 
     if weekday in [5, 6]: 
-        # 星期六、星期日：今天的籌碼尚未產生，強制回溯到本週五
         days_to_subtract = 1 if weekday == 5 else 2
         target_date = today - datetime.timedelta(days=days_to_subtract)
     elif weekday == 0: 
-        # 星期一：
-        # 如果還沒過 16:00，代表今天籌碼還沒出來，強制抓取「上週五」
-        # 如果過了 16:00，代表今天週一的籌碼出來了，直接抓取「今天週一」
         if not is_after_settlement:
             target_date = today - datetime.timedelta(days=3)
     else:
-        # 星期二至星期五（常規交易日）：
-        # 如果還沒過 16:00，今天的籌碼還沒公布，強制抓取「昨天 (前一日)」
-        # 如果過了 16:00，今天籌碼公布了，抓取「今天最新」
         if not is_after_settlement:
             target_date = today - datetime.timedelta(days=1)
 
-    # 格式化成 API 的字串
     end_date = target_date.strftime("%Y-%m-%d")
-    # 開始日期往前推 10 天，確保遇到大連假也能連貫計算
     start_date = (target_date - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
     
     is_etf = len(str(stock_id).strip()) == 5
@@ -312,7 +292,6 @@ def fetch_real_institutional(stock_id):
     return chip_result, latest_date_str
 
 def fetch_real_news(stock_id):
-    """優化新聞爬蟲網址拼接，全面相容個股與 ETF"""
     is_etf = len(str(stock_id).strip()) == 5
     url_id = f"{stock_id}.TW" if is_etf else stock_id
     url = f"https://tw.stock.yahoo.com/quote/{url_id}/news"
@@ -335,8 +314,8 @@ def fetch_real_news(stock_id):
         return [{"title": "新聞抓取連線失敗", "link": "#"}]
 
 def get_marquee_html():
-    """動態版：精準爬取當日全台股成交量排行榜，放寬抓取4-5碼，自動過濾None"""
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    """黃金防錯版全台股即時量排行榜跑馬燈 (含主動熔斷過濾)"""
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     yahoo_url = "https://tw.stock.yahoo.com/rank/volume"
     dynamic_hot_list = []
     
@@ -360,24 +339,42 @@ def get_marquee_html():
     if len(dynamic_hot_list) < 5:
         dynamic_hot_list = ["2330", "2317", "3231", "2603", "0050", "2382", "00878", "2618", "2356", "2891"]
 
-    params = "|".join([f"tse_{sid}.tw|otc_{sid}.tw" for sid in dynamic_hot_list])
+    params_list = []
+    for sid in dynamic_hot_list:
+        params_list.append(f"tse_{sid}.tw")
+        params_list.append(f"otc_{sid}.tw")
+    params = "|".join(params_list)
+    
     url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={params}&_={int(time.time() * 1000)}"
 
     try:
         res = requests.get(url, headers=headers, timeout=3).json()
         stocks = []
         if "msgArray" in res:
+            seen_marquee_stocks = set()
             for info in res["msgArray"]:
-                if not info.get("n") or info.get("n") == "-" or info.get("n").strip() == "":
+                stock_id = info.get("c")
+                if not info.get("n") or info.get("n") == "-" or stock_id in seen_marquee_stocks:
                     continue
                     
-                price_str = info.get("z", info.get("b", "0").split("_")[0])
+                price_str = info.get("z", "").strip()
+                if not price_str or price_str == "-":
+                    price_str = info.get("b", "").split("_")[0].strip()
+                if not price_str or price_str == "-":
+                    price_str = info.get("y", "0").strip()
+
                 price = float(price_str) if price_str and price_str != "-" else 0.0
                 y_price = float(info.get("y", 0))
                 vol = int(info.get("v", 0))
-                pct = ((price - y_price) / y_price) * 100 if y_price > 0 else 0.0
 
-                stocks.append({"id": info.get("c"), "name": info.get("n"), "price": price, "pct": pct, "vol": vol})
+                # 🌟 黃金防護線：只要現價或昨收價其中一個為 0，代表資料不完整，直接主動熔斷（跳過不渲染）
+                if price == 0 or y_price == 0:
+                    continue
+
+                pct = ((price - y_price) / y_price) * 100
+
+                stocks.append({"id": stock_id, "name": info.get("n"), "price": price, "pct": pct, "vol": vol})
+                seen_marquee_stocks.add(stock_id)
 
         stocks.sort(key=lambda x: x['vol'], reverse=True)
         render_stocks = stocks[:10]
@@ -401,7 +398,6 @@ def get_marquee_html():
         return "<div style='color: gray;'>即時行情動態跑馬燈載入中...</div>"
 
 def fetch_five_levels(stock_id):
-    """支援 4 碼與 5 碼個股/ETF 之即時五檔盤口解算"""
     url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw&_={int(time.time() * 1000)}"
     try:
         res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=3).json()
@@ -508,11 +504,10 @@ with col_left:
     else:
         st.write("目前無監控中的股票。")
 
-    if st.button("🗑️ 清空監控清單與警報紀錄"):
+    if st.button("🗑️ 清空即時監控總表"):
         st.session_state.monitored_stocks.clear()
         st.session_state.stock_ma_notes.clear() 
         st.session_state.alerted_stocks.clear()
-        st.session_state.alert_history.clear()
         st.rerun()
 
 with col_right:
