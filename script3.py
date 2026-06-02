@@ -215,24 +215,39 @@ def fetch_kline_chart(stock_id, period, interval, label_name):
         return None
 
 def fetch_real_institutional(stock_id):
-    """智慧優化版：星期六、日、一自動回溯抓取前一有效禮拜五的法人籌碼，並分流 ETF 資料集"""
+    """🌟 智慧優化版：以 16:00 為分水嶺，非公布時間自動完美回溯前一日/禮拜五數據"""
     today = datetime.date.today()
-    current_hour = datetime.datetime.now().hour
-    weekday = today.weekday()  # 0是週一, 5是週六, 6是週日
+    now = datetime.datetime.now()
+    weekday = today.weekday()  # 0是週一, 1是週二..., 5是週六, 6是週日
+    current_hour = now.hour
 
-    end_date_target = today
+    # 預設基準日期為今天
+    target_date = today
 
-    # 六、日、一早盤智慧歷史回溯過濾
-    if weekday == 5:    
-        end_date_target = today - datetime.timedelta(days=1)
-    elif weekday == 6:  
-        end_date_target = today - datetime.timedelta(days=2)
-    elif weekday == 0:  
-        if current_hour < 15:
-            end_date_target = today - datetime.timedelta(days=3)
+    # 🌟 核心分流判定：今天是否已經過了 16:00 結算點？
+    is_after_settlement = (current_hour >= 16)
 
-    end_date = end_date_target.strftime("%Y-%m-%d")
-    start_date = (end_date_target - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
+    if weekday in [5, 6]: 
+        # 星期六、星期日：今天的籌碼尚未產生，強制回溯到本週五
+        days_to_subtract = 1 if weekday == 5 else 2
+        target_date = today - datetime.timedelta(days=days_to_subtract)
+    elif weekday == 0: 
+        # 星期一：
+        # 如果還沒過 16:00，代表今天籌碼還沒出來，強制抓取「上週五」
+        # 如果過了 16:00，代表今天週一的籌碼出來了，直接抓取「今天週一」
+        if not is_after_settlement:
+            target_date = today - datetime.timedelta(days=3)
+    else:
+        # 星期二至星期五（常規交易日）：
+        # 如果還沒過 16:00，今天的籌碼還沒公布，強制抓取「昨天 (前一日)」
+        # 如果過了 16:00，今天籌碼公布了，抓取「今天最新」
+        if not is_after_settlement:
+            target_date = today - datetime.timedelta(days=1)
+
+    # 格式化成 API 的字串
+    end_date = target_date.strftime("%Y-%m-%d")
+    # 開始日期往前推 10 天，確保遇到大連假也能連貫計算
+    start_date = (target_date - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
     
     is_etf = len(str(stock_id).strip()) == 5
     dataset = "TaiwanStockInstitutionalInvestorsBuySell" if not is_etf else "TaiwanEeceptInvestorsBuySell"
