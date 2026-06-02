@@ -136,31 +136,60 @@ def check_ma_breakthrough(stock_id):
         return ""
 
 def fetch_twse_realtime(stock_set, alert_threshold):
+    """🌟 雙通道優化版：同時請求上市與上櫃通道，徹底解決盤中量價顯示為 0 的問題"""
     if not stock_set: return []
-    stock_params = "|".join([f"tse_{sid}.tw" for sid in stock_set])
+    
+    # 🌟 修改：每一檔股票代號都同時送出 tse (上市) 與 otc (上櫃) 查詢參數，確保證交所能正確分流回應
+    params_list = []
+    for sid in stock_set:
+        params_list.append(f"tse_{sid}.tw")
+        params_list.append(f"otc_{sid}.tw")
+        
+    stock_params = "|".join(params_list)
     timestamp = int(time.time() * 1000)
     url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={stock_params}&_={timestamp}"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
 
     results = []
     try:
         response = requests.get(url, headers=headers, timeout=5)
         data = response.json()
-        if "msgArray" in data:
+        if "msgArray" in data and data["msgArray"]:
+            # 用一個 set 來防呆，避免同一檔股票因為 tse 和 otc 都回傳而重疊顯示
+            seen_stocks = set()
+            
             for info in data["msgArray"]:
                 stock_id = info.get("c")
-                stock_name = info.get("n")
+                if not stock_id or stock_id in seen_stocks:
+                    continue
+                
+                stock_name = info.get("n", st.session_state.stock_names.get(stock_id, "未知個股"))
                 st.session_state.stock_names[stock_id] = stock_name
                 
                 if stock_id not in st.session_state.stock_ma_notes:
                     st.session_state.stock_ma_notes[stock_id] = check_ma_breakthrough(stock_id)
 
-                price_str = info.get("z", info.get("b", "0").split("_")[0])
+                # 🌟 優化價格解析：如果當下成交價 'z' 抓不到，改抓買進價 'b' 的第一檔，再抓不到就抓昨收價 'y'
+                price_str = info.get("z", "").strip()
+                if not price_str or price_str == "-":
+                    price_str = info.get("b", "").split("_")[0].strip()
+                if not price_str or price_str == "-":
+                    price_str = info.get("y", "0").strip()
+
                 current_price = float(price_str) if price_str and price_str != "-" else 0.0
                 yesterday_price = float(info.get("y", 0))
                 volume = int(info.get("v", 0))
 
+                # 計算即時漲跌幅
                 change_percent = ((current_price - yesterday_price) / yesterday_price) * 100 if yesterday_price > 0 else 0.0
+
+                # 排除完全沒成交資料的極端防呆
+                if current_price == 0:
+                    continue
+
+                seen_stocks.add(stock_id)
 
                 if change_percent >= alert_threshold and stock_id not in st.session_state.alerted_stocks:
                     st.toast(f"🚨 警報！{stock_name} 漲幅突破 {alert_threshold}% (現價 {current_price})", icon="🚀")
@@ -183,7 +212,8 @@ def fetch_twse_realtime(stock_set, alert_threshold):
                     "成交量": volume
                 })
         return results
-    except Exception:
+    except Exception as e:
+        print(f"量價抓取異常: {e}")
         return []
 
 def fetch_kline_chart(stock_id, period, interval, label_name):
