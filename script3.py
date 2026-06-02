@@ -556,7 +556,7 @@ with col_right:
                     st.markdown(f"##### 📊 {selected_stock} 近 5 個交易日主力籌碼趨勢明細 (單位: 張)")
                     st.caption("💡 正數代表買超 (主力吸籌)，負數代表賣超 (主力出貨)。")
                     
-                    # 使用 Streamlit 內建的高級表格元件展示 5 日數據
+                    # 1. 顯示 5 日明細表格
                     st.dataframe(
                         chip_df,
                         use_container_width=True,
@@ -568,6 +568,38 @@ with col_right:
                             "自營商": st.column_config.NumberColumn("自營商買賣超", format="%d 張")
                         }
                     )
+                    
+                    st.markdown("---")
+                    st.markdown(f"##### 🧮 {selected_stock} 近 5 日三大法人「總買賣超合計」")
+                    
+                    # 2. 核心計算：利用 Pandas 把這 5 天的各別法人張數加總
+                    sum_foreign = int(chip_df["外資"].sum())
+                    sum_trust = int(chip_df["投信"].sum())
+                    sum_dealer = int(chip_df["自營商"].sum())
+                    
+                    # 3. 渲染總數看板
+                    sum_cols = st.columns(3)
+                    with sum_cols[0]:
+                        st.metric(
+                            label="外資 5日累積", 
+                            value=f"{sum_foreign:,} 張", 
+                            delta="累積買超" if sum_foreign >= 0 else "累積賣超", 
+                            delta_color="normal"
+                        )
+                    with sum_cols[1]:
+                        st.metric(
+                            label="投信 5日累積", 
+                            value=f"{sum_trust:,} 張", 
+                            delta="累積買超" if sum_trust >= 0 else "累積賣超", 
+                            delta_color="normal"
+                        )
+                    with sum_cols[2]:
+                        st.metric(
+                            label="自營商 5日累積", 
+                            value=f"{sum_dealer:,} 張", 
+                            delta="累積買超" if sum_dealer >= 0 else "累積賣超", 
+                            delta_color="normal"
+                        )
                 else:
                     st.info(f"📅 提示：{status}。盤中 16:00 前若查無資料，系統會自動遞補展示前 5 日的歷史結算數據。")
 
