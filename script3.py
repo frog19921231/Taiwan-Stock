@@ -237,9 +237,8 @@ def fetch_kline_chart(stock_id, period, interval, label_name):
         return None
 
 def fetch_real_institutional(stock_id):
-    """🌟 波段升級版：固定抓取並解算最近 5 個交易日的三大法人詳細買賣超數據 """
+    """🌟 智慧優化版：擴大關鍵字防護網，徹底解決自營商因科目細分（避險/自有）導致顯示為 0 的問題"""
     today = datetime.date.today()
-    # 往前推 20 天，確保扣除週休二日與連續假期後，一定能湊滿 5 個真正的交易日
     start_date = (today - datetime.timedelta(days=20)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     
@@ -260,37 +259,34 @@ def fetch_real_institutional(stock_id):
         if data.get("msg") == "success" and len(data.get("data", [])) > 0:
             df = pd.DataFrame(data["data"])
             
-            # 統一個股與 ETF 的法人欄位名稱對應字典
-            name_mapping = {
-                "Foreign_Investor_Buy_and_Sell": "外資",
-                "Investment_Trust_Buy_and_Sell": "投信",
-                "Dealer_Buy_and_Sell": "自營商",
-                "外資及陸資買賣超股數": "外資",
-                "投信買賣超股數": "投信",
-                "自營商買賣超股數": "自營商"
-            }
-            
-            # 如果是個股，FinMind 欄位是 'name'；如果是 ETF，有時是別的欄位，做防呆
+            # 🌟 核心修正：改用「關鍵字模糊包含 (Contains)」邏輯，不再使用精確 map
+            # 只要原始名稱包含這些字，就歸類到對應的法人
+            def classify_institution(name_str):
+                name_str = str(name_str)
+                if "外資" in name_str or "Foreign" in name_str:
+                    return "外資"
+                elif "投信" in name_str or "Trust" in name_str:
+                    return "投信"
+                # 避險與自有科目一律加總算入自營商
+                elif "自營" in name_str or "Dealer" in name_str:
+                    return "自營商"
+                return "其他"
+
             if 'name' in df.columns:
-                df['法人'] = df['name'].map(lambda x: next((v for k, v in name_mapping.items() if k in str(x) or x in k), "其他"))
+                df['法人'] = df['name'].apply(classify_institution)
             else:
                 return None, "籌碼資料格式解析失敗"
                 
-            # 計算買賣超張數 (FinMind 預設是股數，除以 1000 換算為張)
             df['張數'] = (df['buy'] - df['sell']) // 1000
             
-            # 依照日期與法人進行資料透視 (Pivot Table)，把不同法人的數據擠在同一行
             pivot_df = df.pivot_table(index='date', columns='法人', values='張數', aggfunc='sum').reset_index()
             
-            # 確保外資、投信、自營商三個欄位都有出來，沒有的話補 0
             for col in ["外資", "投信", "自營商"]:
                 if col not in pivot_df.columns:
                     pivot_df[col] = 0
             
-            # 只要保留這三個核心法人，並按日期降序排列（最新的在最上面）
             result_df = pivot_df[['date', '外資', '投信', '自營商']].sort_values(by='date', ascending=False)
             
-            # 精準切出最近的 5 個交易日
             final_df = result_df.head(5).copy()
             final_df.rename(columns={'date': '交易日期'}, inplace=True)
             
