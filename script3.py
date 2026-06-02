@@ -319,23 +319,32 @@ def fetch_real_news(stock_id):
         return [{"title": "新聞抓取連線失敗", "link": "#"}]
 
 def get_marquee_html():
-    """🌟 聲量完全匹配版：跑馬燈放棄 Yahoo 排行，100% 同步顯示 PTT 挖出來的自選監控標的"""
+    """🌟 交叉匹配完全體：維持全台股成交量前10大排行，若同時符合 PTT 聲量則加星號並高亮閃爍"""
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    yahoo_url = "https://tw.stock.yahoo.com/rank/volume"
+    dynamic_hot_list = []
     
-    # 🌟 核心匹配邏輯：直接讀取 PTT 掃描出來的自選監控清單
-    dynamic_hot_list = list(st.session_state.monitored_stocks)
+    # 1. 抓取全台股成交量前 15 大（多抓 5 檔備用過濾）
+    try:
+        yahoo_res = requests.get(yahoo_url, headers=headers, timeout=3)
+        if yahoo_res.status_code == 200:
+            yahoo_soup = BeautifulSoup(yahoo_res.text, 'html.parser')
+            links = yahoo_soup.find_all('a', href=True)
+            for link in links:
+                href = link['href']
+                match = re.search(r'/quote/(\d{4,5})\b', href)
+                if match:
+                    sid = match.group(1)
+                    if sid not in dynamic_hot_list:
+                        dynamic_hot_list.append(sid)
+                if len(dynamic_hot_list) >= 15: 
+                    break
+    except Exception as e:
+        print(f"動態獲取排行失敗: {e}")
         
-    # 防呆機制：如果一剛開始打開網頁，PTT 還沒掃描、清單太少時，用經典權值股與 ETF 填補畫面
     if len(dynamic_hot_list) < 5:
-        backup_list = ["2330", "2317", "3231", "2603", "0050", "2382", "00878", "2618"]
-        for b_sid in backup_list:
-            if b_sid not in dynamic_hot_list:
-                dynamic_hot_list.append(b_sid)
+        dynamic_hot_list = ["2330", "2317", "3231", "2603", "0050", "2382", "00878", "2618", "2356", "2891"]
 
-    # 限制跑馬燈最多顯示 12 檔最熱門的，避免過長
-    dynamic_hot_list = dynamic_hot_list[:12]
-
-    # 建立雙通道參數
     params_list = []
     for sid in dynamic_hot_list:
         params_list.append(f"tse_{sid}.tw")
@@ -354,7 +363,7 @@ def get_marquee_html():
                 if not info.get("n") or info.get("n") == "-" or stock_id in seen_marquee_stocks:
                     continue
                     
-                # 三層價格防禦機制
+                # 三層價格防禦
                 price_str = info.get("z", "").strip()
                 if not price_str or price_str == "-":
                     price_str = info.get("b", "").split("_")[0].strip()
@@ -374,22 +383,48 @@ def get_marquee_html():
                 stocks.append({"id": stock_id, "name": info.get("n"), "price": price, "pct": pct, "vol": vol})
                 seen_marquee_stocks.add(stock_id)
 
-        # 依據當下成交量，對 PTT 股票進行由大到小排序排序
+        # 依據成交量進行精準排序，切出前 10 名
         stocks.sort(key=lambda x: x['vol'], reverse=True)
+        render_stocks = stocks[:10]
 
         html_content = ""
-        for s in stocks:
+        for s in render_stocks:
+            # 判斷漲跌幅顏色與箭頭
             if s['pct'] > 0: color, arrow = "#ff4b4b", "▲"
             elif s['pct'] < 0: color, arrow = "#00fa9a", "▼"
             else: color, arrow = "white", "-"
             
-            # 點擊跑馬燈個股，右側一樣能完美連動切換深度分析
-            html_content += f"<a href='/?target_stock={s['id']}' target='_self' style='text-decoration:none; color:{color}; margin-right: 40px; font-size: 18px; font-weight: bold;' title='聲量匹配標的。點擊分析 {s['name']}'>{s['name']} {s['price']} {arrow} {s['pct']:.2f}%</a>"
+            # 🌟 核心匹配檢查：這檔爆量股是否也出現在 PTT 監控清單中？
+            is_matched = s['id'] in st.session_state.monitored_stocks
+            
+            if is_matched:
+                # 匹配成功：文字前加上閃爍金星，並套用 CSS blink 動畫
+                display_text = f"<span class='blink' style='color: #FFD700; font-weight: 900;'>★</span>{s['name']}"
+            else:
+                # 未匹配：正常顯示名稱
+                display_text = s['name']
+            
+            html_content += f"<a href='/?target_stock={s['id']}' target='_self' style='text-decoration:none; color:{color}; margin-right: 40px; font-size: 18px; font-weight: bold;' title='點擊分析 {s['name']}'>{display_text} {s['price']} {arrow} {s['pct']:.2f}%</a>"
+
+        # 🌟 內嵌 CSS 動態呼吸閃爍動畫樣式
+        blink_css = """
+        <style>
+        @keyframes blinker {  
+            50% { opacity: 0.2; }
+        }
+        .blink {
+            animation: blinker 1.0s linear infinite;
+            display: inline-block;
+            margin-right: 3px;
+        }
+        </style>
+        """
 
         return f"""
+        {blink_css}
         <div style="background-color: #1E1E1E; padding: 12px; border-radius: 8px; border: 1px solid #333; margin-bottom: 20px;">
             <marquee behavior="scroll" direction="left" scrollamount="6" onmouseover="this.stop();" onmouseout="this.start();">
-                <span style="color: #FFD700; margin-right: 40px; font-size: 18px; font-weight: bold; border-right: 2px solid #555; padding-right: 15px;">🔥 鄉民熱議即時行情</span>
+                <span style="color: #00BFFF; margin-right: 40px; font-size: 18px; font-weight: bold; border-right: 2px solid #555; padding-right: 15px;">📊 當日爆量指標行情</span>
                 {html_content}
             </marquee>
         </div>
