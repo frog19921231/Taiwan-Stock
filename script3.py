@@ -314,31 +314,23 @@ def fetch_real_news(stock_id):
         return [{"title": "新聞抓取連線失敗", "link": "#"}]
 
 def get_marquee_html():
-    """黃金防錯版全台股即時量排行榜跑馬燈 (含主動熔斷過濾)"""
+    """🌟 聲量完全匹配版：跑馬燈放棄 Yahoo 排行，100% 同步顯示 PTT 挖出來的自選監控標的"""
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    yahoo_url = "https://tw.stock.yahoo.com/rank/volume"
-    dynamic_hot_list = []
     
-    try:
-        yahoo_res = requests.get(yahoo_url, headers=headers, timeout=3)
-        if yahoo_res.status_code == 200:
-            yahoo_soup = BeautifulSoup(yahoo_res.text, 'html.parser')
-            links = yahoo_soup.find_all('a', href=True)
-            for link in links:
-                href = link['href']
-                match = re.search(r'/quote/(\d{4,5})\b', href)
-                if match:
-                    sid = match.group(1)
-                    if sid not in dynamic_hot_list:
-                        dynamic_hot_list.append(sid)
-                if len(dynamic_hot_list) >= 15: 
-                    break
-    except Exception as e:
-        print(f"動態獲取排行失敗: {e}")
+    # 🌟 核心匹配邏輯：直接讀取 PTT 掃描出來的自選監控清單
+    dynamic_hot_list = list(st.session_state.monitored_stocks)
         
+    # 防呆機制：如果一剛開始打開網頁，PTT 還沒掃描、清單太少時，用經典權值股與 ETF 填補畫面
     if len(dynamic_hot_list) < 5:
-        dynamic_hot_list = ["2330", "2317", "3231", "2603", "0050", "2382", "00878", "2618", "2356", "2891"]
+        backup_list = ["2330", "2317", "3231", "2603", "0050", "2382", "00878", "2618"]
+        for b_sid in backup_list:
+            if b_sid not in dynamic_hot_list:
+                dynamic_hot_list.append(b_sid)
 
+    # 限制跑馬燈最多顯示 12 檔最熱門的，避免過長
+    dynamic_hot_list = dynamic_hot_list[:12]
+
+    # 建立雙通道參數
     params_list = []
     for sid in dynamic_hot_list:
         params_list.append(f"tse_{sid}.tw")
@@ -357,6 +349,7 @@ def get_marquee_html():
                 if not info.get("n") or info.get("n") == "-" or stock_id in seen_marquee_stocks:
                     continue
                     
+                # 三層價格防禦機制
                 price_str = info.get("z", "").strip()
                 if not price_str or price_str == "-":
                     price_str = info.get("b", "").split("_")[0].strip()
@@ -367,7 +360,7 @@ def get_marquee_html():
                 y_price = float(info.get("y", 0))
                 vol = int(info.get("v", 0))
 
-                # 🌟 黃金防護線：只要現價或昨收價其中一個為 0，代表資料不完整，直接主動熔斷（跳過不渲染）
+                # 黃金防護線
                 if price == 0 or y_price == 0:
                     continue
 
@@ -376,20 +369,22 @@ def get_marquee_html():
                 stocks.append({"id": stock_id, "name": info.get("n"), "price": price, "pct": pct, "vol": vol})
                 seen_marquee_stocks.add(stock_id)
 
+        # 依據當下成交量，對 PTT 股票進行由大到小排序排序
         stocks.sort(key=lambda x: x['vol'], reverse=True)
-        render_stocks = stocks[:10]
 
         html_content = ""
-        for s in render_stocks:
+        for s in stocks:
             if s['pct'] > 0: color, arrow = "#ff4b4b", "▲"
             elif s['pct'] < 0: color, arrow = "#00fa9a", "▼"
             else: color, arrow = "white", "-"
             
-            html_content += f"<a href='/?target_stock={s['id']}' target='_self' style='text-decoration:none; color:{color}; margin-right: 40px; font-size: 18px; font-weight: bold;' title='點擊分析 {s['name']}'>{s['name']} {s['price']} {arrow} {s['pct']:.2f}%</a>"
+            # 點擊跑馬燈個股，右側一樣能完美連動切換深度分析
+            html_content += f"<a href='/?target_stock={s['id']}' target='_self' style='text-decoration:none; color:{color}; margin-right: 40px; font-size: 18px; font-weight: bold;' title='聲量匹配標的。點擊分析 {s['name']}'>{s['name']} {s['price']} {arrow} {s['pct']:.2f}%</a>"
 
         return f"""
         <div style="background-color: #1E1E1E; padding: 12px; border-radius: 8px; border: 1px solid #333; margin-bottom: 20px;">
             <marquee behavior="scroll" direction="left" scrollamount="6" onmouseover="this.stop();" onmouseout="this.start();">
+                <span style="color: #FFD700; margin-right: 40px; font-size: 18px; font-weight: bold; border-right: 2px solid #555; padding-right: 15px;">🔥 鄉民熱議即時行情</span>
                 {html_content}
             </marquee>
         </div>
