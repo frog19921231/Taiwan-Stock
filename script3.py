@@ -549,13 +549,27 @@ with col_right:
                 else: st.warning("無法取得該週期的歷史 K 線資料。")
 
         with tab2:
-            with st.spinner("向 FinMind 請求最新真實籌碼中..."):
-                chip_data, latest_date = fetch_real_institutional(selected_stock)
-                st.caption(f"📅 資料日期: **{latest_date}** (盤後/週末自動轉換)")
-                chip_cols = st.columns(3)
-                for idx, (inst, value) in enumerate(chip_data.items()):
-                    with chip_cols[idx]:
-                        st.metric(label=inst, value=f"{value} 張", delta="買超" if value > 0 else "賣超", delta_color="normal")
+            with st.spinner("向 FinMind 請求近 5 日真實籌碼中..."):
+                chip_df, status = fetch_real_institutional(selected_stock)
+                
+                if status == "OK" and chip_df is not None:
+                    st.markdown(f"##### 📊 {selected_stock} 近 5 個交易日主力籌碼趨勢明細 (單位: 張)")
+                    st.caption("💡 正數代表買超 (主力吸籌)，負數代表賣超 (主力出貨)。")
+                    
+                    # 使用 Streamlit 內建的高級表格元件展示 5 日數據
+                    st.dataframe(
+                        chip_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "交易日期": st.column_config.TextColumn("交易日期", width="medium"),
+                            "外資": st.column_config.NumberColumn("外資買賣超", format="%d 張"),
+                            "投信": st.column_config.NumberColumn("投信買賣超", format="%d 張"),
+                            "自營商": st.column_config.NumberColumn("自營商買賣超", format="%d 張")
+                        }
+                    )
+                else:
+                    st.info(f"📅 提示：{status}。盤中 16:00 前若查無資料，系統會自動遞補展示前 5 日的歷史結算數據。")
 
         with tab3:
             with st.spinner("📰 正在即時抓取 Yahoo 股市新聞..."):
