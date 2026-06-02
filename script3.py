@@ -237,27 +237,11 @@ def fetch_kline_chart(stock_id, period, interval, label_name):
         return None
 
 def fetch_real_institutional(stock_id):
-    """16:00智慧分流結算版籌碼爬蟲"""
+    """🌟 波段升級版：固定抓取並解算最近 5 個交易日的三大法人詳細買賣超數據 """
     today = datetime.date.today()
-    now = datetime.datetime.now()
-    weekday = today.weekday()
-    current_hour = now.hour
-
-    target_date = today
-    is_after_settlement = (current_hour >= 16)
-
-    if weekday in [5, 6]: 
-        days_to_subtract = 1 if weekday == 5 else 2
-        target_date = today - datetime.timedelta(days=days_to_subtract)
-    elif weekday == 0: 
-        if not is_after_settlement:
-            target_date = today - datetime.timedelta(days=3)
-    else:
-        if not is_after_settlement:
-            target_date = today - datetime.timedelta(days=1)
-
-    end_date = target_date.strftime("%Y-%m-%d")
-    start_date = (target_date - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
+    # 往前推 20 天，確保扣除週休二日與連續假期後，一定能湊滿 5 個真正的交易日
+    start_date = (today - datetime.timedelta(days=20)).strftime("%Y-%m-%d")
+    end_date = today.strftime("%Y-%m-%d")
     
     is_etf = len(str(stock_id).strip()) == 5
     dataset = "TaiwanStockInstitutionalInvestorsBuySell" if not is_etf else "TaiwanEeceptInvestorsBuySell"
@@ -269,27 +253,52 @@ def fetch_real_institutional(stock_id):
         "start_date": start_date,
         "end_date": end_date
     }
-    chip_result = {"外資": 0, "投信": 0, "自營商": 0}
-    latest_date_str = "查無資料"
     
     try:
         res = requests.get(url, params=params, timeout=5)
         data = res.json()
         if data.get("msg") == "success" and len(data.get("data", [])) > 0:
-            df_data = data["data"]
-            latest_date_str = df_data[-1]["date"]
-            latest_records = [item for item in df_data if item["date"] == latest_date_str]
-            for record in latest_records:
-                volume_in_lots = (record.get("buy", 0) - record.get("sell", 0)) // 1000
-                name = record.get("name", "")
+            df = pd.DataFrame(data["data"])
+            
+            # 統一個股與 ETF 的法人欄位名稱對應字典
+            name_mapping = {
+                "Foreign_Investor_Buy_and_Sell": "外資",
+                "Investment_Trust_Buy_and_Sell": "投信",
+                "Dealer_Buy_and_Sell": "自營商",
+                "外資及陸資買賣超股數": "外資",
+                "投信買賣超股數": "投信",
+                "自營商買賣超股數": "自營商"
+            }
+            
+            # 如果是個股，FinMind 欄位是 'name'；如果是 ETF，有時是別的欄位，做防呆
+            if 'name' in df.columns:
+                df['法人'] = df['name'].map(lambda x: next((v for k, v in name_mapping.items() if k in str(x) or x in k), "其他"))
+            else:
+                return None, "籌碼資料格式解析失敗"
                 
-                if "外資" in name or "🚀" in name: chip_result["外資"] += volume_in_lots
-                elif "投信" in name: chip_result["投信"] += volume_in_lots
-                elif "自營商" in name: chip_result["自營商"] += volume_in_lots
-    except Exception:
-        latest_date_str = "網路錯誤"
+            # 計算買賣超張數 (FinMind 預設是股數，除以 1000 換算為張)
+            df['張數'] = (df['buy'] - df['sell']) // 1000
+            
+            # 依照日期與法人進行資料透視 (Pivot Table)，把不同法人的數據擠在同一行
+            pivot_df = df.pivot_table(index='date', columns='法人', values='張數', aggfunc='sum').reset_index()
+            
+            # 確保外資、投信、自營商三個欄位都有出來，沒有的話補 0
+            for col in ["外資", "投信", "自營商"]:
+                if col not in pivot_df.columns:
+                    pivot_df[col] = 0
+            
+            # 只要保留這三個核心法人，並按日期降序排列（最新的在最上面）
+            result_df = pivot_df[['date', '外資', '投信', '自營商']].sort_values(by='date', ascending=False)
+            
+            # 精準切出最近的 5 個交易日
+            final_df = result_df.head(5).copy()
+            final_df.rename(columns={'date': '交易日期'}, inplace=True)
+            
+            return final_df, "OK"
+    except Exception as e:
+        print(f"籌碼解析異常: {e}")
         
-    return chip_result, latest_date_str
+    return None, "網路連線或資料庫重整中"
 
 def fetch_real_news(stock_id):
     is_etf = len(str(stock_id).strip()) == 5
